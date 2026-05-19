@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy/providers/ds4"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/env"
 	"github.com/stretchr/testify/assert"
@@ -417,6 +418,34 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 
 	_, ok := cfg.Providers.Get("openai")
 	require.True(t, ok, "OpenAI provider should still be present")
+}
+
+func TestConfig_configureProvidersDS4InProcess(t *testing.T) {
+	// ds4 is an in-process provider: it has no API key and no base URL,
+	// and its type is not a catwalk known type. It must survive config
+	// load anyway rather than being deleted as a custom provider.
+	cfg := &Config{
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"ds4": {
+				Type: ds4.Name,
+				Models: []catwalk.Model{
+					{ID: "deepseek-v4-flash"},
+				},
+			},
+		}),
+	}
+	cfg.setDefaults("/tmp", "")
+	env := env.NewFromMap(map[string]string{})
+	resolver := NewShellVariableResolver(env)
+
+	err := cfg.configureProviders(testStore(cfg), env, resolver, nil)
+	require.NoError(t, err)
+
+	pc, ok := cfg.Providers.Get("ds4")
+	require.True(t, ok, "ds4 provider should survive config load despite no API key or base URL")
+	require.Equal(t, ds4.Name, string(pc.Type))
+	require.Equal(t, "ds4", pc.ID)
+	require.Len(t, pc.Models, 1)
 }
 
 func TestConfig_configureProvidersBedrockWithCredentials(t *testing.T) {

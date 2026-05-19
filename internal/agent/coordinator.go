@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -40,11 +41,14 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/azure"
 	"charm.land/fantasy/providers/bedrock"
+	"charm.land/fantasy/providers/ds4"
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
+	ds4go "github.com/NimbleMarkets/ds4go"
+	"github.com/NimbleMarkets/ds4go/ds4api"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/qjebbs/go-jsons"
 )
@@ -103,6 +107,13 @@ type coordinator struct {
 	allSkills    []*skills.Skill // Pre-filter: all discovered after dedup.
 	activeSkills []*skills.Skill // Post-filter: active skills only.
 	skillTracker *skills.Tracker
+
+	// ds4Providers caches in-process ds4 providers by model path.
+	// UpdateModels rebuilds providers on every turn, but the ds4 engine
+	// is expensive to construct and is meant to live for the whole
+	// process, so the provider instance is built once and reused.
+	ds4mu        sync.Mutex
+	ds4Providers map[string]fantasy.Provider
 
 	readyWg errgroup.Group
 }
@@ -413,6 +424,15 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 		if err == nil {
 			options[openaicompat.Name] = parsed
 		}
+	case ds4.Name:
+		mode := ds4api.ThinkNone
+		switch {
+		case model.ModelCfg.ReasoningEffort == "max":
+			mode = ds4api.ThinkMax
+		case model.ModelCfg.Think || model.ModelCfg.ReasoningEffort != "":
+			mode = ds4api.ThinkHigh
+		}
+		options[ds4.Name] = &ds4.ProviderOptions{ThinkMode: &mode}
 	}
 
 	return options
@@ -864,6 +884,46 @@ func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
 	return err == nil && opts.Thinking != nil
 }
 
+// buildDs4Provider constructs the in-process ds4 provider. The fantasy
+// ds4 provider builds its engine lazily on the first message, so this
+// runs a fail-fast pre-flight on the model path to surface a missing
+// model as a clear startup error instead of a cryptic mid-chat failure.
+func (c *coordinator) buildDs4Provider(modelPath string) (fantasy.Provider, error) {
+	if modelPath == "" {
+		return nil, errors.New("ds4: model path is unset; install the DeepSeek V4 Flash model with the ds4go tooling, or set DS4_DIR")
+	}
+	if _, err := os.Stat(modelPath); err != nil {
+		return nil, fmt.Errorf("ds4: model file not found at %q; install it with the ds4go tooling: %w", modelPath, err)
+	}
+	return ds4.New(
+		ds4.WithModelPath(modelPath),
+		ds4.WithLogger(slog.DebugContext),
+	)
+}
+
+// cachedDs4Provider returns the ds4 provider for modelPath, building it
+// once and reusing it on subsequent calls. buildProvider runs on every
+// turn via UpdateModels; without this cache each turn would construct a
+// fresh ds4 engine and discard the previous one's warm state. Build
+// errors are not cached, so a transient failure can be retried.
+func (c *coordinator) cachedDs4Provider(modelPath string) (fantasy.Provider, error) {
+	c.ds4mu.Lock()
+	defer c.ds4mu.Unlock()
+
+	if p, ok := c.ds4Providers[modelPath]; ok {
+		return p, nil
+	}
+	p, err := c.buildDs4Provider(modelPath)
+	if err != nil {
+		return nil, err
+	}
+	if c.ds4Providers == nil {
+		c.ds4Providers = make(map[string]fantasy.Provider)
+	}
+	c.ds4Providers[modelPath] = p
+	return p, nil
+}
+
 func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
 	headers := maps.Clone(providerCfg.ExtraHeaders)
 	if headers == nil {
@@ -911,6 +971,8 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 			providerCfg.ExtraBody["tool_stream"] = true
 		}
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
+	case ds4.Name:
+		return c.cachedDs4Provider(ds4go.DefaultModelPath())
 	default:
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	}

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy/providers/ds4"
 	"github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/env"
@@ -353,7 +354,11 @@ func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver Va
 		providerConfig.Name = cmp.Or(providerConfig.Name, id) // Use ID as name if not set
 		// default to OpenAI if not set
 		providerConfig.Type = cmp.Or(providerConfig.Type, catwalk.TypeOpenAICompat)
-		if !slices.Contains(catwalk.KnownProviderTypes(), providerConfig.Type) && providerConfig.Type != hyper.Name {
+		// ds4 is an in-process provider: it has no API endpoint, so it
+		// is exempt from the base URL checks below, the same way hyper
+		// is exempt from the provider-type check.
+		isDs4 := providerConfig.Type == ds4.Name
+		if !slices.Contains(catwalk.KnownProviderTypes(), providerConfig.Type) && providerConfig.Type != hyper.Name && !isDs4 {
 			slog.Warn("Skipping custom provider due to unsupported provider type", "provider", id)
 			c.Providers.Del(id)
 			continue
@@ -367,7 +372,7 @@ func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver Va
 		if providerConfig.APIKey == "" {
 			slog.Warn("Provider is missing API key, this might be OK for local providers", "provider", id)
 		}
-		if providerConfig.BaseURL == "" {
+		if providerConfig.BaseURL == "" && !isDs4 {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id)
 			c.Providers.Del(id)
 			continue
@@ -382,7 +387,7 @@ func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver Va
 			slog.Warn("Provider is missing API key, this might be OK for local providers", "provider", id)
 		}
 		baseURL, err := resolver.ResolveValue(providerConfig.BaseURL)
-		if baseURL == "" || err != nil {
+		if (baseURL == "" || err != nil) && !isDs4 {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id, "error", err)
 			c.Providers.Del(id)
 			continue

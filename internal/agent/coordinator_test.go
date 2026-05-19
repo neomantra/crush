@@ -3,12 +3,16 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/bedrock"
+	"charm.land/fantasy/providers/ds4"
+	"github.com/NimbleMarkets/ds4go/ds4api"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -384,6 +388,89 @@ func TestUpdateParentSessionCost(t *testing.T) {
 		require.NoError(t, err)
 		assert.InDelta(t, 0.0, updated.Cost, 1e-9)
 	})
+}
+
+func TestBuildDs4Provider(t *testing.T) {
+	c := &coordinator{}
+
+	t.Run("empty model path errors", func(t *testing.T) {
+		_, err := c.buildDs4Provider("")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "model path is unset")
+	})
+
+	t.Run("missing model file errors", func(t *testing.T) {
+		_, err := c.buildDs4Provider(filepath.Join(t.TempDir(), "nope.gguf"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "model file not found")
+	})
+
+	t.Run("valid path builds provider", func(t *testing.T) {
+		// The ds4 engine is built lazily on first use, so a stub file
+		// is sufficient to verify the pre-flight path check succeeds.
+		f := filepath.Join(t.TempDir(), "model.gguf")
+		require.NoError(t, os.WriteFile(f, []byte("stub"), 0o600))
+		p, err := c.buildDs4Provider(f)
+		require.NoError(t, err)
+		require.NotNil(t, p)
+		require.Equal(t, ds4.Name, p.Name())
+	})
+}
+
+func TestCachedDs4Provider(t *testing.T) {
+	c := &coordinator{}
+	f := filepath.Join(t.TempDir(), "model.gguf")
+	require.NoError(t, os.WriteFile(f, []byte("stub"), 0o600))
+
+	t.Run("repeated calls reuse the same provider", func(t *testing.T) {
+		p1, err := c.cachedDs4Provider(f)
+		require.NoError(t, err)
+		p2, err := c.cachedDs4Provider(f)
+		require.NoError(t, err)
+		require.Same(t, p1, p2, "ds4 provider should be cached and reused across calls")
+	})
+
+	t.Run("errors are not cached", func(t *testing.T) {
+		_, err := c.cachedDs4Provider("")
+		require.Error(t, err)
+		// A subsequent valid call still succeeds (the empty-path failure
+		// did not poison the cache).
+		p, err := c.cachedDs4Provider(f)
+		require.NoError(t, err)
+		require.NotNil(t, p)
+	})
+}
+
+func TestGetProviderOptionsDS4ThinkMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		think  bool
+		effort string
+		want   ds4api.ThinkMode
+	}{
+		{"default is none", false, "", ds4api.ThinkNone},
+		{"think enables high", true, "", ds4api.ThinkHigh},
+		{"effort enables high", false, "medium", ds4api.ThinkHigh},
+		{"max effort enables max", false, "max", ds4api.ThinkMax},
+		{"max effort wins over think", true, "max", ds4api.ThinkMax},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := Model{
+				ModelCfg: config.SelectedModel{Think: tt.think, ReasoningEffort: tt.effort},
+			}
+			providerCfg := config.ProviderConfig{Type: ds4.Name}
+
+			opts := getProviderOptions(model, providerCfg)
+
+			raw, ok := opts[ds4.Name]
+			require.True(t, ok, "options should be keyed under ds4.Name")
+			parsed, ok := raw.(*ds4.ProviderOptions)
+			require.True(t, ok, "options should be *ds4.ProviderOptions")
+			require.NotNil(t, parsed.ThinkMode)
+			require.Equal(t, tt.want, *parsed.ThinkMode)
+		})
+	}
 }
 
 func TestGetProviderOptionsReasoningEffort(t *testing.T) {

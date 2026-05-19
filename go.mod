@@ -2,6 +2,14 @@ module github.com/charmbracelet/crush
 
 go 1.26.3
 
+replace (
+	// ds4 support
+	charm.land/fantasy => github.com/neomantra/fantasy v0.0.0-20260521103729-9f1970ebb829 // branch nm-ds4
+	// otherwise we segfault
+	charm.land/glamour/v2 => github.com/neomantra/glamour/v2 v2.0.0-20260521135448-62ae0394d887 // branch fix-close-ordering
+	charm.land/lipgloss/v2 => github.com/neomantra/lipgloss/v2 v2.0.0-20260520194429-bdbf42df1529 // branch fix-wrap-defer
+)
+
 require (
 	charm.land/bubbles/v2 v2.1.0
 	charm.land/bubbletea/v2 v2.0.6
@@ -15,6 +23,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/NimbleMarkets/ds4go v0.3.0
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/alecthomas/chroma/v2 v2.24.1
 	github.com/atotto/clipboard v0.1.4
@@ -178,7 +187,7 @@ require (
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0-beta.0 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/swaggo/files/v2 v2.0.0 // indirect
 	github.com/tadvi/systray v0.0.0-20190226123456-11a2b8fa57af // indirect
 	github.com/tidwall/match v1.1.1 // indirect
